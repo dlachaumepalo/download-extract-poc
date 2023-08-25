@@ -84,3 +84,27 @@ $ ll -h /tmp/compression_prototype/**/*.tar.zst
 -rw-rw-r-- 1 user user 128M août  25 10:37 /tmp/compression_prototype/tar-zst-download/logo.tar.zst
 -rw-rw-r-- 1 user user 128M août  25 10:37 /tmp/compression_prototype/tar-zst/logo.tar.zst
 ```
+
+### With dictionary
+
+We used `zstd --train` on the first 50 immutables trio of the mainnet to obtain a dictionnary to try if it improve the
+compression factor and time.
+We did not see any improvement on both metric (here with a compression level of 9):
+
+```shell
+$ cargo nextest run --no-fail-fast -E "test(zstandard)"
+  Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+   Finished test [unoptimized + debuginfo] target(s) in 1.65s
+   Starting 2 tests across 1 binary (2 skipped)
+       PASS [  24.125s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
+       PASS [  24.764s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
+-----------
+    Summary [  24.764s] 2 tests run: 2 passed, 2 skipped
+
+$ ll -h /tmp/compression_prototype/**/*.tar.zst
+rw-rw-r-- 1 user user 136M août  25 11:42 /tmp/compression_prototype/tar-zst-download/logo.tar.zst
+rw-rw-r-- 1 user user 136M août  25 11:41 /tmp/compression_prototype/tar-zst/logo.tar.zst
+
+```
+Maybe a dictionary trained on the whole immutable db would yield better results ? Or maybe the immutables db is not
+suitable for a dictionary ?

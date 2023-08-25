@@ -1,15 +1,77 @@
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use futures_util::TryStreamExt;
 use reqwest::StatusCode;
-use std::{fs::File, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+    path::{Path, PathBuf},
+};
 use tar::{Archive, Builder};
 use tokio_util::io::{StreamReader, SyncIoBridge};
 use zstd::{Decoder, Encoder};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
 
-fn create_tar_gz_archive(dest: &Path) -> Result<()> {
-    let archive_file = File::create(dest)?;
+struct CompressionParams {
+    /// Destination where the archive should be packed
+    destination: PathBuf,
+    /// The compression level (zstandard only)
+    level: i32,
+    /// Zstandard dictionary
+    dictionary: Option<Vec<u8>>,
+}
+
+impl CompressionParams {
+    fn zstandard(destination: &Path, level: i32) -> Self {
+        Self::zstandard_with_dict(destination, level, None)
+    }
+
+    fn zstandard_with_dict(destination: &Path, level: i32, dictionary: Option<Vec<u8>>) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            level,
+            dictionary,
+        }
+    }
+
+    fn gunzip(destination: &Path) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            level: 0,
+            dictionary: None,
+        }
+    }
+}
+
+struct UnpackingParams {
+    /// Directory where the archive should be unpacked
+    destination: PathBuf,
+    /// Zstandard dictionary
+    dictionary: Option<Vec<u8>>,
+}
+
+impl UnpackingParams {
+    fn zstandard(destination: &Path) -> Self {
+        Self::zstandard_with_dict(destination, None)
+    }
+
+    fn zstandard_with_dict(destination: &Path, dictionary: Option<Vec<u8>>) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            dictionary,
+        }
+    }
+
+    fn gunzip(destination: &Path) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            dictionary: None,
+        }
+    }
+}
+
+fn create_tar_gz_archive(params: CompressionParams) -> Result<()> {
+    let archive_file = File::create(params.destination)?;
     let archive_encoder = GzEncoder::new(archive_file, Compression::default());
     let mut archive_builder = Builder::new(archive_encoder);
 
@@ -20,16 +82,16 @@ fn create_tar_gz_archive(dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack_tar_gz_archive(archive: &Path, dest_dir: &Path) -> Result<()> {
+fn unpack_tar_gz_archive(archive: &Path, params: UnpackingParams) -> Result<()> {
     let file_tar_gz = File::open(archive)?;
     let file_tar_gz_decoder = GzDecoder::new(file_tar_gz);
     let mut archive = Archive::new(file_tar_gz_decoder);
-    archive.unpack(dest_dir)?;
+    archive.unpack(&params.destination)?;
 
     Ok(())
 }
 
-async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> Result<()> {
+async fn download_unpack_tar_gz_archive(archive_url: &str, params: UnpackingParams) -> Result<()> {
     let http_client = reqwest::Client::new();
     let response = http_client.get(archive_url).send().await?;
 
@@ -41,7 +103,7 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> R
                     .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
             );
 
-            let dest_dir = dest_dir.to_path_buf();
+            let dest_dir = params.destination.to_path_buf();
             tokio::task::spawn_blocking(move || -> Result<()> {
                 let file_tar_gz_decoder = GzDecoder::new(SyncIoBridge::new(read));
                 let mut archive = Archive::new(file_tar_gz_decoder);
@@ -54,9 +116,16 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> R
     }
 }
 
-fn create_zstd_archive(dest: &Path) -> Result<()> {
-    let archive_file = File::create(dest)?;
-    let archive_encoder = Encoder::new(archive_file, 3)?;
+fn create_zstd_archive(params: CompressionParams) -> Result<()> {
+    let archive_file = File::create(params.destination)?;
+    let archive_encoder = match params.dictionary {
+        None => Encoder::new(archive_file, params.level)?,
+        Some(_) => Encoder::with_dictionary(
+            archive_file,
+            params.level,
+            &read_zstandard_immutable_dictionary()?,
+        )?,
+    };
     let mut archive_builder = Builder::new(archive_encoder);
 
     archive_builder.append_dir_all(".", "assets")?;
@@ -66,16 +135,22 @@ fn create_zstd_archive(dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn unpack_zstd_archive(archive: &Path, dest_dir: &Path) -> Result<()> {
+fn unpack_zstd_archive(archive: &Path, params: UnpackingParams) -> Result<()> {
     let file_zstd = File::open(archive)?;
-    let file_zstd_decoder = Decoder::new(file_zstd)?;
+    let file_zstd_decoder = match params.dictionary {
+        None => Decoder::new(file_zstd)?,
+        Some(_) => Decoder::with_dictionary(
+            BufReader::new(file_zstd),
+            &read_zstandard_immutable_dictionary()?,
+        )?,
+    };
     let mut archive = Archive::new(file_zstd_decoder);
-    archive.unpack(dest_dir)?;
+    archive.unpack(params.destination)?;
 
     Ok(())
 }
 
-async fn download_unpack_ztsd_archive(archive_url: &str, dest_dir: &Path) -> Result<()> {
+async fn download_unpack_ztsd_archive(archive_url: &str, params: UnpackingParams) -> Result<()> {
     let http_client = reqwest::Client::new();
     let response = http_client.get(archive_url).send().await?;
 
@@ -87,9 +162,15 @@ async fn download_unpack_ztsd_archive(archive_url: &str, dest_dir: &Path) -> Res
                     .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
             );
 
-            let dest_dir = dest_dir.to_path_buf();
+            let dest_dir = params.destination.to_path_buf();
             tokio::task::spawn_blocking(move || -> Result<()> {
-                let file_zstd_decoder = Decoder::new(SyncIoBridge::new(read))?;
+                let file_zstd_decoder = match params.dictionary {
+                    None => Decoder::new(SyncIoBridge::new(read))?,
+                    Some(_) => Decoder::with_dictionary(
+                        BufReader::new(SyncIoBridge::new(read)),
+                        &read_zstandard_immutable_dictionary()?,
+                    )?,
+                };
                 let mut archive = Archive::new(file_zstd_decoder);
                 archive.unpack(&dest_dir)?;
                 Ok(())
@@ -98,6 +179,14 @@ async fn download_unpack_ztsd_archive(archive_url: &str, dest_dir: &Path) -> Res
         }
         status_code => Err(format!("[{status_code}] download failed").into()),
     }
+}
+
+fn read_zstandard_immutable_dictionary() -> Result<Vec<u8>> {
+    let mut dictionary = File::open("./dictionary")?;
+    let mut result = vec![];
+    dictionary.read_to_end(&mut result)?;
+
+    Ok(result)
 }
 
 fn main() -> Result<()> {
@@ -118,12 +207,12 @@ fn main() -> Result<()> {
     // redo the unpack but "streamly" without downloading the archive first
 
     let archive = Path::new("logo.tar.gz");
-    create_tar_gz_archive(archive)?;
-    unpack_tar_gz_archive(archive, Path::new("."))?;
+    create_tar_gz_archive(CompressionParams::gunzip(archive))?;
+    unpack_tar_gz_archive(archive, UnpackingParams::gunzip(Path::new(".")))?;
 
     let archive = Path::new("logo.tar.zst");
-    create_zstd_archive(archive)?;
-    unpack_zstd_archive(archive, Path::new("."))?;
+    create_zstd_archive(CompressionParams::zstandard(archive, 0))?;
+    unpack_zstd_archive(archive, UnpackingParams::zstandard(Path::new(".")))?;
 
     Ok(())
 }
@@ -181,8 +270,10 @@ mod tests {
         let archive = dir.join("logo.tar.gz");
         println!("Dir: {}", dir.display());
 
-        create_tar_gz_archive(&archive).expect("compression to a `tar.gz` should not fail");
-        unpack_tar_gz_archive(&archive, &dir).expect("unpacking a `tar.gz` should not fail");
+        create_tar_gz_archive(CompressionParams::gunzip(&archive))
+            .expect("compression to a `tar.gz` should not fail");
+        unpack_tar_gz_archive(&archive, UnpackingParams::gunzip(&dir))
+            .expect("unpacking a `tar.gz` should not fail");
 
         let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
         assert_eq!(hash, EXPECTED_SHA);
@@ -194,8 +285,10 @@ mod tests {
         let archive = dir.join("logo.tar.zst");
         println!("Dir: {}", dir.display());
 
-        create_zstd_archive(&archive).expect("compression to a `tar.zst` should not fail");
-        unpack_zstd_archive(&archive, &dir).expect("unpacking a `tar.zst` should not fail");
+        create_zstd_archive(CompressionParams::zstandard(&archive, 0))
+            .expect("compression to a `tar.zst` should not fail");
+        unpack_zstd_archive(&archive, UnpackingParams::zstandard(&dir))
+            .expect("unpacking a `tar.zst` should not fail");
 
         let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
         assert_eq!(hash, EXPECTED_SHA);
@@ -212,10 +305,14 @@ mod tests {
         // Wait for the python server to be ready
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        create_tar_gz_archive(&archive).expect("compression to a `tar.gz` should not fail");
-        download_unpack_tar_gz_archive(&format!("http://{SERVER_URL}:{port}/logo.tar.gz"), &dir)
-            .await
-            .expect("downloading and unpacking a `tar.gz` should not fail");
+        create_tar_gz_archive(CompressionParams::gunzip(&archive))
+            .expect("compression to a `tar.gz` should not fail");
+        download_unpack_tar_gz_archive(
+            &format!("http://{SERVER_URL}:{port}/logo.tar.gz"),
+            UnpackingParams::gunzip(&dir),
+        )
+        .await
+        .expect("downloading and unpacking a `tar.gz` should not fail");
 
         let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
         assert_eq!(hash, EXPECTED_SHA);
@@ -232,10 +329,14 @@ mod tests {
         // Wait for the python server to be ready
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        create_zstd_archive(&archive).expect("compression to a `tar.zst` should not fail");
-        download_unpack_ztsd_archive(&format!("http://{SERVER_URL}:{port}/logo.tar.zst"), &dir)
-            .await
-            .expect("downloading and unpacking a `tar.zst` should not fail");
+        create_zstd_archive(CompressionParams::zstandard(&archive, 0))
+            .expect("compression to a `tar.zst` should not fail");
+        download_unpack_ztsd_archive(
+            &format!("http://{SERVER_URL}:{port}/logo.tar.zst"),
+            UnpackingParams::zstandard(&dir),
+        )
+        .await
+        .expect("downloading and unpacking a `tar.zst` should not fail");
 
         let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
         assert_eq!(hash, EXPECTED_SHA);
