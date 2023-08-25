@@ -1,13 +1,12 @@
-use async_compression::tokio::bufread::GzipDecoder;
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use reqwest::StatusCode;
 use std::{fs::File, path::Path};
 use tar::{Archive, Builder};
-use tokio_util::io::StreamReader;
+use tokio_util::io::{StreamReader, SyncIoBridge};
 use zstd::{Decoder, Encoder};
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
 
 fn create_tar_gz_archive(dest: &Path) -> Result<()> {
     let archive_file = File::create(dest)?;
@@ -36,20 +35,22 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> R
 
     match response.status() {
         StatusCode::OK => {
-            //let mut remote_stream = response.bytes_stream();
-
-            let mut read = StreamReader::new(
+            let read = StreamReader::new(
                 response
                     .bytes_stream()
                     .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
             );
-            let file_tar_gz_decoder = GzipDecoder::new(read);
-            let mut archive = Archive::new(file_tar_gz_decoder);
-            archive.unpack(dest_dir)?;
 
-            Ok(())
+            let dest_dir = dest_dir.to_path_buf();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let file_tar_gz_decoder = GzDecoder::new(SyncIoBridge::new(read));
+                let mut archive = Archive::new(file_tar_gz_decoder);
+                archive.unpack(&dest_dir)?;
+                Ok(())
+            })
+            .await?
         }
-        status_code => Err("download failed".into()),
+        _ => Err("download failed".into()),
     }
 }
 
@@ -145,7 +146,7 @@ mod tests {
         let mut command = Command::new("python3");
         command
             .current_dir(run_dir)
-            .args(["-m", "http.server", "--bind", SERVER_URL, SERVER_URL])
+            .args(["-m", "http.server", "--bind", SERVER_URL, SERVER_PORT])
             .kill_on_drop(true);
         Ok(command.spawn()?)
     }
