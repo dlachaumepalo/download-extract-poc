@@ -56,7 +56,7 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> R
 
 fn create_zstd_archive(dest: &Path) -> Result<()> {
     let archive_file = File::create(dest)?;
-    let archive_encoder = Encoder::new(archive_file, 0)?;
+    let archive_encoder = Encoder::new(archive_file, 3)?;
     let mut archive_builder = Builder::new(archive_encoder);
 
     archive_builder.append_dir_all(".", "assets")?;
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_unpack_while_downloading_ztsd_tarball() {
+    async fn create_and_unpack_while_downloading_zstandard_tarball() {
         let dir = get_temp_dir("tar-zst-download");
         let archive = dir.join("logo.tar.zst");
         println!("Dir: {}", dir.display());
