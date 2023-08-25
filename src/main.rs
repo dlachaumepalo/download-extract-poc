@@ -50,7 +50,7 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, dest_dir: &Path) -> R
             })
             .await?
         }
-        _ => Err("download failed".into()),
+        status_code => Err(format!("[{status_code}] download failed").into()),
     }
 }
 
@@ -73,6 +73,31 @@ fn unpack_zstd_archive(archive: &Path, dest_dir: &Path) -> Result<()> {
     archive.unpack(dest_dir)?;
 
     Ok(())
+}
+
+async fn download_unpack_ztsd_archive(archive_url: &str, dest_dir: &Path) -> Result<()> {
+    let http_client = reqwest::Client::new();
+    let response = http_client.get(archive_url).send().await?;
+
+    match response.status() {
+        StatusCode::OK => {
+            let read = StreamReader::new(
+                response
+                    .bytes_stream()
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)),
+            );
+
+            let dest_dir = dest_dir.to_path_buf();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let file_zstd_decoder = Decoder::new(SyncIoBridge::new(read))?;
+                let mut archive = Archive::new(file_zstd_decoder);
+                archive.unpack(&dest_dir)?;
+                Ok(())
+            })
+            .await?
+        }
+        status_code => Err(format!("[{status_code}] download failed").into()),
+    }
 }
 
 fn main() -> Result<()> {
@@ -119,7 +144,6 @@ mod tests {
 
     const EXPECTED_SHA: &str = "d29d4ae5320b168a45a524639c45419c5e1185c4c92d2c2bcb02a8657a0369ec";
     const SERVER_URL: &str = "127.0.0.1";
-    const SERVER_PORT: &str = "8001";
 
     fn get_temp_dir(dir_name: &str) -> PathBuf {
         let dir = std::env::temp_dir()
@@ -142,11 +166,11 @@ mod tests {
         Ok(hex::encode(hasher.finalize()))
     }
 
-    fn start_python_server(run_dir: &Path) -> Result<Child> {
+    fn start_python_server(run_dir: &Path, server_port: &str) -> Result<Child> {
         let mut command = Command::new("python3");
         command
             .current_dir(run_dir)
-            .args(["-m", "http.server", "--bind", SERVER_URL, SERVER_PORT])
+            .args(["-m", "http.server", "--bind", SERVER_URL, server_port])
             .kill_on_drop(true);
         Ok(command.spawn()?)
     }
@@ -182,18 +206,36 @@ mod tests {
         let dir = get_temp_dir("tar-gz-download");
         let archive = dir.join("logo.tar.gz");
         println!("Dir: {}", dir.display());
-        let _child = start_python_server(&dir).unwrap();
+        let port = "8002";
+        let _child = start_python_server(&dir, port).unwrap();
 
         // Wait for the python server to be ready
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         create_tar_gz_archive(&archive).expect("compression to a `tar.gz` should not fail");
-        download_unpack_tar_gz_archive(
-            &format!("http://{SERVER_URL}:{SERVER_PORT}/logo.tar.gz"),
-            &dir,
-        )
-        .await
-        .expect("downloading and unpacking a `tar.gz` should not fail");
+        download_unpack_tar_gz_archive(&format!("http://{SERVER_URL}:{port}/logo.tar.gz"), &dir)
+            .await
+            .expect("downloading and unpacking a `tar.gz` should not fail");
+
+        let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
+        assert_eq!(hash, EXPECTED_SHA);
+    }
+
+    #[tokio::test]
+    async fn create_and_unpack_while_downloading_ztsd_tarball() {
+        let dir = get_temp_dir("tar-zst-download");
+        let archive = dir.join("logo.tar.zst");
+        println!("Dir: {}", dir.display());
+        let port = "8003";
+        let _child = start_python_server(&dir, port).unwrap();
+
+        // Wait for the python server to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        create_zstd_archive(&archive).expect("compression to a `tar.zst` should not fail");
+        download_unpack_ztsd_archive(&format!("http://{SERVER_URL}:{port}/logo.tar.zst"), &dir)
+            .await
+            .expect("downloading and unpacking a `tar.zst` should not fail");
 
         let hash = compute_sha256_digest(&dir.join("logo.svg")).unwrap();
         assert_eq!(hash, EXPECTED_SHA);
