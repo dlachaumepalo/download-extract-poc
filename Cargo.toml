@@ -15,4 +15,4 @@ sha2 = "0.10.7"
 tar = "0.4.40"
 tokio = { version = "1.32.0", features = ["full"] }
 tokio-util = { version = "0.7.8", features = ["codec", "io", "io-util"] }
-zstd = "0.12.4"
+zstd = {version = "0.12.4", features = ["zstdmt"]}

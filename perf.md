@@ -9,25 +9,32 @@ Tests run on a computer with:
 On a folder containing the first 20 immutables trio of the cardano mainnet for a total size of 400M.
 
 ## Recap
+_mt = number of threads, single threaded if missing_
 
-|                      | compress <br/>+ uncompress time | archive size |
-|----------------------|---------------------------------|--------------|
-| tar.gz               | 57.6s                           | 143M         |
-| zstandard (level  3) | 6.5s                            | 137M         |
-| zstandard (level  9) | 23.9s                           | 135M         |
-| zstandard (level 22) | 1014.4s                         | 128M         |
+|                           | compress <br/>+ uncompress time | archive size |
+|---------------------------|---------------------------------|--------------|
+| tar.gz                    | 57.6s                           | 143M         |
+| zstandard (level  3)      | 6.5s                            | 137M         |
+| zstandard (level  9)      | 23.9s                           | 135M         |
+| zstandard (level 9 - MT2) | 12.93s                          | 135M         |
+| zstandard (level 9 - MT4) | 8.355s                          | 135M         |
+| zstandard (level 9 - MT8) | 8.064s                          | 135M         |
+| zstandard (level 22)      | 1014.4s                         | 128M         |
 
 ## tar.gz
 
 * execution time:
 ```shell
+$ cargo nextest run --no-fail-fast -E "test(gunzip)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+Finished test [unoptimized + debuginfo] target(s) in 0.03s
 Starting 2 tests across 1 binary
     PASS [  57.247s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_gunzip_tarball
     PASS [  57.612s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_gunzip_tarball
 ```
 * archives size:
 ```shell
-╰─ ll -h /tmp/compression_prototype/**/*.tar.gz
+$ ll -h /tmp/compression_prototype/**/*.tar.gz
 -rw-rw-r-- 1 user user 143M août  25 10:21 /tmp/compression_prototype/tar-gz-download/logo.tar.gz
 -rw-rw-r-- 1 user user 143M août  25 10:21 /tmp/compression_prototype/tar-gz/logo.tar.gz
 ```
@@ -39,6 +46,7 @@ Starting 2 tests across 1 binary
 * execution time
 ```shell
 $ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
 Finished test [unoptimized + debuginfo] target(s) in 0.03s
 Starting 2 tests across 1 binary (2 skipped)
     PASS [   5.827s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
@@ -56,9 +64,10 @@ $ ll -h /tmp/compression_prototype/**/*.tar.zst
 * execution time
 ```shell
 $ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
 Finished test [unoptimized + debuginfo] target(s) in 0.03s
 Starting 2 tests across 1 binary (2 skipped)
-    PASS [  23.280s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_ztsd_tarball
+    PASS [  23.280s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
     PASS [  23.908s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
 ```
 * archives size:
@@ -73,9 +82,10 @@ $ ll -h /tmp/compression_prototype/**/*.tar.zst
 * execution time
 ```shell
 $ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
 Finished test [unoptimized + debuginfo] target(s) in 0.03s
 Starting 2 tests across 1 binary (2 skipped)
-    PASS [1014.090s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_ztsd_tarball
+    PASS [1014.090s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
     PASS [1014.366s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
 ```
 * archives size:
@@ -93,9 +103,9 @@ We did not see any improvement on both metric (here with a compression level of 
 
 ```shell
 $ cargo nextest run --no-fail-fast -E "test(zstandard)"
-  Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
-   Finished test [unoptimized + debuginfo] target(s) in 1.65s
-   Starting 2 tests across 1 binary (2 skipped)
+    Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+    Finished test [unoptimized + debuginfo] target(s) in 1.65s
+    Starting 2 tests across 1 binary (2 skipped)
        PASS [  24.125s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
        PASS [  24.764s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
 -----------
@@ -104,7 +114,52 @@ $ cargo nextest run --no-fail-fast -E "test(zstandard)"
 $ ll -h /tmp/compression_prototype/**/*.tar.zst
 rw-rw-r-- 1 user user 136M août  25 11:42 /tmp/compression_prototype/tar-zst-download/logo.tar.zst
 rw-rw-r-- 1 user user 136M août  25 11:41 /tmp/compression_prototype/tar-zst/logo.tar.zst
-
 ```
 Maybe a dictionary trained on the whole immutable db would yield better results ? Or maybe the immutables db is not
 suitable for a dictionary ?
+
+### Multithreading
+
+The `zstd` crate have a [multithread option](https://docs.rs/zstd/0.12.4/zstd/stream/write/struct.Encoder.html#method.multithread)
+for compression only.
+It's allow a signifiant speedup, bringing a level 9 option close to a level 3 if enough thread is given.
+
+Four threads seems to be a good compromize between efficienty and computer power used.
+
+All below tests are done using a level 9 compression level (see [compression level 9](#compression-level-9) for archive size).
+
+#### 2 threads
+
+* execution time
+```shell
+$ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+Finished test [unoptimized + debuginfo] target(s) in 0.03s
+Starting 2 tests across 1 binary (2 skipped)
+    PASS [  12.525s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
+    PASS [  12.937s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
+```
+
+#### 4 threads
+
+* execution time
+```shell
+$ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+Finished test [unoptimized + debuginfo] target(s) in 0.03s
+Starting 2 tests across 1 binary (2 skipped)
+    PASS [   8.355s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
+    PASS [   8.895s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
+```
+
+#### 8 threads
+
+* execution time
+```shell
+$ cargo nextest run --no-fail-fast -E "test(zstandard)"
+Compiling download-extract-poc v0.1.0 (/home/user/dev/download-extract-poc)
+Finished test [unoptimized + debuginfo] target(s) in 0.03s
+Starting 2 tests across 1 binary (2 skipped)
+    PASS [   7.702s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_while_downloading_zstandard_tarball
+    PASS [   8.064s] download-extract-poc::bin/download-extract-poc tests::create_and_unpack_zstandard_tarball
+```

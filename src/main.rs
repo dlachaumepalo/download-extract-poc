@@ -19,6 +19,8 @@ struct CompressionParams {
     level: i32,
     /// Zstandard dictionary
     dictionary: Option<Vec<u8>>,
+    /// Number of thread for zstandard compression, if None multithread will be disabled
+    threads: Option<u32>,
 }
 
 impl CompressionParams {
@@ -26,11 +28,21 @@ impl CompressionParams {
         Self::zstandard_with_dict(destination, level, None)
     }
 
+    fn zstandard_multithread(destination: &Path, level: i32, threads: u32) -> Self {
+        Self {
+            destination: destination.to_path_buf(),
+            level,
+            dictionary: None,
+            threads: Some(threads),
+        }
+    }
+
     fn zstandard_with_dict(destination: &Path, level: i32, dictionary: Option<Vec<u8>>) -> Self {
         Self {
             destination: destination.to_path_buf(),
             level,
             dictionary,
+            threads: None,
         }
     }
 
@@ -39,6 +51,7 @@ impl CompressionParams {
             destination: destination.to_path_buf(),
             level: 0,
             dictionary: None,
+            threads: None,
         }
     }
 }
@@ -118,7 +131,7 @@ async fn download_unpack_tar_gz_archive(archive_url: &str, params: UnpackingPara
 
 fn create_zstd_archive(params: CompressionParams) -> Result<()> {
     let archive_file = File::create(params.destination)?;
-    let archive_encoder = match params.dictionary {
+    let mut archive_encoder = match params.dictionary {
         None => Encoder::new(archive_file, params.level)?,
         Some(_) => Encoder::with_dictionary(
             archive_file,
@@ -126,6 +139,11 @@ fn create_zstd_archive(params: CompressionParams) -> Result<()> {
             &read_zstandard_immutable_dictionary()?,
         )?,
     };
+
+    if let Some(threads) = params.threads {
+        archive_encoder.multithread(threads)?;
+    }
+
     let mut archive_builder = Builder::new(archive_encoder);
 
     archive_builder.append_dir_all(".", "assets")?;
@@ -285,7 +303,7 @@ mod tests {
         let archive = dir.join("logo.tar.zst");
         println!("Dir: {}", dir.display());
 
-        create_zstd_archive(CompressionParams::zstandard(&archive, 0))
+        create_zstd_archive(CompressionParams::zstandard_multithread(&archive, 9, 8))
             .expect("compression to a `tar.zst` should not fail");
         unpack_zstd_archive(&archive, UnpackingParams::zstandard(&dir))
             .expect("unpacking a `tar.zst` should not fail");
@@ -329,7 +347,7 @@ mod tests {
         // Wait for the python server to be ready
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        create_zstd_archive(CompressionParams::zstandard(&archive, 0))
+        create_zstd_archive(CompressionParams::zstandard_multithread(&archive, 9, 8))
             .expect("compression to a `tar.zst` should not fail");
         download_unpack_ztsd_archive(
             &format!("http://{SERVER_URL}:{port}/logo.tar.zst"),
