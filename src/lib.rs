@@ -6,6 +6,12 @@ pub mod params;
 
 pub type StdResult<T> = Result<T, Box<dyn std::error::Error + Sync + Send>>;
 
+#[derive(Debug, Clone, Copy)]
+pub enum CompressionAlgorithm {
+    ZStandard,
+    Gunzip,
+}
+
 pub fn read_zstandard_immutable_dictionary() -> StdResult<Vec<u8>> {
     use std::io::Read;
 
