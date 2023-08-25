@@ -1,6 +1,7 @@
 pub mod basic_unpack;
 pub mod compress;
 pub mod download_unpack;
+pub mod download_unpack_channel;
 pub mod params;
 
 pub type StdResult<T> = Result<T, Box<dyn std::error::Error + Sync + Send>>;
