@@ -1,2 +1,5 @@
 /target
 .DS_Store
+/assets/*.chunk
+/assets/*.primary
+/assets/*.secondary
